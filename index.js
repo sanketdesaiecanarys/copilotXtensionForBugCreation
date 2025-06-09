@@ -4,93 +4,66 @@ import { Octokit } from "@octokit/core";
 const app = express();
 app.use(express.json());
 
-// POST route to create GitHub issue
-app.post("/", async (req, res) => {
+app.post("/create-issue/:owner/:repo", async (req, res) => {
   try {
-    console.log("📥 Received POST request at /");
-
-    // Extract Authorization header
-    const authHeader = req.get("authorization");
-    if (!authHeader) {
-      console.error("❌ Missing Authorization header");
-      return res.status(401).json({ error: "Missing Authorization header" });
-    }
-
-    console.log("🔐 Authorization header received:", authHeader);
-
-    // Extract GitHub Bearer token
-    const tokenMatch = authHeader.match(/^GitHub-Bearer (.+)$/);
-    const token = tokenMatch?.[1];
-
+    const token = req.get("X-GitHub-Token");
     if (!token) {
-      console.error("❌ Invalid Authorization format. Expected 'GitHub-Bearer <token>'");
-      return res.status(401).json({ error: "Invalid Authorization header format" });
+      console.error("❌ Missing X-GitHub-Token header");
+      return res.status(401).json({ error: "Missing X-GitHub-Token header" });
     }
+    console.log("🔐 Token received (first 6 chars):", token.slice(0, 6) + "…");
 
-    console.log("✅ GitHub token extracted");
-
-    // Initialize Octokit
     const octokit = new Octokit({ auth: token });
 
-    // Fetch authenticated user info
-    console.log("🔍 Fetching authenticated user info...");
+    // Verify token by fetching user info
     const userResponse = await octokit.request("GET /user");
     const githubHandle = userResponse?.data?.login;
-
     if (!githubHandle) {
-      console.error("❌ Unable to extract GitHub username from user data:", userResponse);
-      return res.status(500).json({ error: "Could not fetch authenticated GitHub username" });
+      console.error("❌ Invalid token or cannot fetch user");
+      return res.status(401).json({ error: "Invalid or unauthorized token" });
     }
+    console.log("🙋 Authenticated GitHub user:", githubHandle);
 
-    console.log("🙋 GitHub handle of authenticated user:", githubHandle);
-
-    // Validate request body
-    const { repositoryFullName, title } = req.body;
-    if (!repositoryFullName) {
-      console.error("❌ Missing repositoryFullName in request body");
-      return res.status(400).json({ error: "repositoryFullName is required in request body" });
-    }
-
-    console.log("📦 repositoryFullName received:", repositoryFullName);
-
-    // Split owner/repo
-    const [owner, repo] = repositoryFullName.split("/");
+    // Extract owner and repo from URL params
+    const { owner, repo } = req.params;
     if (!owner || !repo) {
-      console.error("❌ Invalid repositoryFullName format. Expected owner/repo");
-      return res.status(400).json({ error: "Invalid repositoryFullName format. Expected owner/repo" });
+      return res.status(400).json({ error: "Owner and repo must be specified in URL" });
+    }
+    console.log(`📦 Creating issue in repo: ${owner}/${repo}`);
+
+    // Extract issue details from body
+    const { title, body, assignees, labels } = req.body;
+
+    if (!title || title.trim() === "") {
+      return res.status(400).json({ error: "Issue title is required in body" });
     }
 
-    const issueTitle = title && title.trim() !== "" ? title.trim() : "Default Issue Title from Copilot";
-
-    console.log("📝 Preparing to create issue with title:", issueTitle);
-
-    // Build issue payload
+    // Prepare payload for issue creation
     const issuePayload = {
       owner,
       repo,
-      title: issueTitle,
-      assignees: [githubHandle],
+      title: title.trim(),
+      body: body || undefined,
+      assignees: assignees && assignees.length > 0 ? assignees : [githubHandle],
+      labels: labels && labels.length > 0 ? labels : undefined,
     };
 
-    console.log("🚀 Sending request to GitHub API to create issue...");
+    console.log("📝 Issue payload:", issuePayload);
 
-    // Create the issue
     const createdIssue = await octokit.request("POST /repos/{owner}/{repo}/issues", issuePayload);
 
-    if (!createdIssue || !createdIssue.data?.html_url) {
-      console.error("❌ GitHub API did not return expected response:", createdIssue);
+    if (!createdIssue?.data?.html_url) {
+      console.error("❌ GitHub API response missing issue URL", createdIssue);
       return res.status(500).json({ error: "GitHub issue creation failed", details: createdIssue });
     }
 
-    console.log("✅ Issue successfully created:", createdIssue.data.html_url);
-
-    // Respond to client
+    console.log("✅ Issue created:", createdIssue.data.html_url);
     return res.status(201).json({
       message: "Issue created successfully",
       issue_url: createdIssue.data.html_url,
     });
   } catch (err) {
-    console.error("🔥 Unexpected error occurred:", err?.response?.data || err.message);
+    console.error("🔥 Error:", err?.response?.data || err.message);
     return res.status(500).json({
       error: "Issue creation failed",
       details: err?.response?.data || err.message,
@@ -98,14 +71,11 @@ app.post("/", async (req, res) => {
   }
 });
 
-// Health check route
 app.get("/", (req, res) => {
-  console.log("🌐 GET request received at root path");
   res.send("🧭 GitHub Copilot Issue Creator is live.");
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🟢 Server is running on port ${PORT}`);
+  console.log(`🟢 Server running on port ${PORT}`);
 });

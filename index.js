@@ -1,70 +1,57 @@
-// server.js
-import express from "express";
 import { Octokit } from "@octokit/core";
+import express from "express";
+import { Readable } from "node:stream";
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const app = express()
 
-app.use(express.json());
-
-// Basic health check route
 app.get("/", (req, res) => {
-  console.log("GET / - Health check hit");
-  res.send("✅ GitHub Copilot Issue Creator is live.");
+  res.send("Ahoy, matey! Welcome to the Blackbeard Pirate GitHub Copilot Extension!")
 });
 
-// POST route to create an issue
-app.post("/create-issue/:owner/:repo", async (req, res) => {
-  const { owner, repo } = req.params;
-  const token = req.get("X-GitHub-Token") || req.get("Authorization")?.replace("Bearer ", "");
+app.post("/", express.json(), async (req, res) => {
+  // Identify the user, using the GitHub API token provided in the request headers.
+  const tokenForUser = req.get("X-GitHub-Token");
+  const octokit = new Octokit({ auth: tokenForUser });
+  const user = await octokit.request("GET /user");
+  console.log("User:", user.data.login);
 
-  console.log("🔄 POST /create-issue hit");
-  console.log("👉 Headers:", req.headers);
-  console.log("👉 Body:", req.body);
-  console.log("👉 Params:", { owner, repo });
+  // Parse the request payload and log it.
+  const payload = req.body;
+  console.log("Payload:", payload);
 
-  if (!token) {
-    console.error("❌ Missing GitHub token in headers");
-    return res.status(400).json({ error: "Missing required X-GitHub-Token or Authorization header" });
-  }
+  // Insert a special pirate-y system message in our message list.
+  const messages = payload.messages;
+  messages.unshift({
+    role: "system",
+    content: "You are a helpful assistant that replies to user messages as if you were the Blackbeard Pirate.",
+  });
+  messages.unshift({
+    role: "system",
+    content: `Start every response with the user's name, which is @${user.data.login}`,
+  });
 
-  const { title, body } = req.body;
-
-  if (!title) {
-    console.error("❌ Missing issue title");
-    return res.status(400).json({ error: "Missing issue title in request body" });
-  }
-
-  try {
-    const octokit = new Octokit({ auth: token });
-
-    const response = await octokit.request("POST /repos/{owner}/{repo}/issues", {
-      owner,
-      repo,
-      title,
-      body: body || "", // Optional body
-    });
-
-    console.log("✅ Issue created:", response.data.html_url);
-    res.status(201).json({
-      message: "Issue created successfully",
-      issue_url: response.data.html_url,
-    });
-  } catch (error) {
-    console.error("❌ GitHub API error:", error.message);
-    if (error.response) {
-      console.error("🔎 GitHub response:", error.response.data);
-      res.status(error.response.status).json({
-        error: error.message,
-        details: error.response.data,
-      });
-    } else {
-      res.status(500).json({ error: "Internal server error" });
+  // Use Copilot's LLM to generate a response to the user's messages, with
+  // our extra system messages attached.
+  const copilotLLMResponse = await fetch(
+    "https://api.githubcopilot.com/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokenForUser}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        messages,
+        stream: true,
+      }),
     }
-  }
-});
+  );
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server is running on http://localhost:${PORT}`);
+  // Stream the response straight back to the user.
+  Readable.from(copilotLLMResponse.body).pipe(res);
+})
+
+const port = Number(process.env.PORT || '3000')
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`)
 });

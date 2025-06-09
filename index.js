@@ -1,104 +1,67 @@
 import express from "express";
-import { Readable } from "node:stream";
 import { Octokit } from "@octokit/core";
 
 const app = express();
 app.use(express.json());
 
-// In-memory user config store: { githubUsername: { token, org, project } }
-const userConfigs = {};
-
 app.get("/", (req, res) => {
-  res.send("🚀 BugBot Copilot Extension is running!");
+  res.send("Ahoy! Ye be talkin’ to Blackbeard’s GitHub Issue Creator. Type @mygitappforcopilot and I’ll raise an issue from the depths! 🏴‍☠️");
 });
 
 app.post("/", async (req, res) => {
   try {
-    const githubToken = req.get("X-GitHub-Token");
-    if (!githubToken) {
-      return res.status(400).json({ error: "Missing GitHub token" });
+    const token = req.get("X-GitHub-Token");
+    if (!token) {
+      return res.status(401).json({ error: "Arrr! GitHub token be missin’ from yer headers!" });
     }
 
-    const octokit = new Octokit({ auth: githubToken });
+    const octokit = new Octokit({ auth: token });
     const user = await octokit.request("GET /user");
-    const githubUsername = user.data.login;
+    const login = user.data.login;
 
     const payload = req.body;
-    const userMessage = payload.messages.find(msg => msg.role === "user")?.content || "";
+    const message = payload.messages?.at(-1)?.content?.toLowerCase() || "";
 
-    // Handle @BugBot config
-    const configMatch = userMessage.match(/@bugbot\s+config\s+\[token:(.*?)\]\s+\[org:(.*?)\]\s+\[project:(.*?)\]/i);
-    if (configMatch) {
-      const [, token, org, project] = configMatch;
-      userConfigs[githubUsername] = { token, org, project };
-
-      return res.json({
-        message: `✅ Configuration saved for @${githubUsername}. You can now create bugs using @BugBot!`
-      });
+    if (!payload.repository || !payload.repository.full_name) {
+      return res.status(400).json({ error: "Blimey! No repository info in the payload!" });
     }
 
-    // Handle @BugBot bug creation
-    if (userMessage.toLowerCase().startsWith("@bugbot")) {
-      const config = userConfigs[githubUsername];
-      if (!config) {
-        return res.json({
-          message: `⚠️ @${githubUsername}, please configure your Azure DevOps credentials first:\n@BugBot config [token:...] [org:...] [project:...]`
-        });
-      }
+    const [owner, repo] = payload.repository.full_name.split("/");
 
-      const bugTitle = userMessage.replace(/@bugbot/i, "").trim();
+    // Extract optional title and assignee
+    const titleMatch = message.match(/with title\s+"([^"]+)"/);
+    const assigneeMatch = message.match(/assign it to\s+"([^"]+)"/);
 
-      const createWorkItemUrl = `https://dev.azure.com/${config.org}/${config.project}/_apis/wit/workitems/$Bug?api-version=7.1-preview.3`;
+    const issueTitle = titleMatch ? titleMatch[1] : `Default issue opened by @${login}`;
+    const assignee = assigneeMatch ? assigneeMatch[1] : null;
 
-      const adoBody = [
-        { op: "add", path: "/fields/System.Title", value: bugTitle },
-        { op: "add", path: "/fields/System.Description", value: `Reported by @${githubUsername}` }
-      ];
+    const issueData = {
+      owner,
+      repo,
+      title: issueTitle,
+    };
 
-      const adoResponse = await fetch(createWorkItemUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json-patch+json",
-          Authorization: `Basic ${Buffer.from(":" + config.token).toString("base64")}`
-        },
-        body: JSON.stringify(adoBody)
-      });
-
-      if (!adoResponse.ok) {
-        const errorText = await adoResponse.text();
-        return res.status(adoResponse.status).json({ error: "Azure DevOps error", details: errorText });
-      }
-
-      const result = await adoResponse.json();
-      return res.json({
-        message: `✅ Bug created: [#${result.id}](${result._links.html.href})`
-      });
+    if (assignee) {
+      issueData.assignees = [assignee];
     }
 
-    // Default Copilot Chat fallback
-    const messages = payload.messages;
-    messages.unshift({
-      role: "system",
-      content: `You are a helpful assistant. Start every response with @${githubUsername}`,
+    const createdIssue = await octokit.request("POST /repos/{owner}/{repo}/issues", issueData);
+
+    res.json({
+      message: `@${login} Aye! Issue "${issueTitle}" be created ${assignee ? `and assigned to ${assignee}` : "with no crew assigned"}! 🦜`,
+      issue_url: createdIssue.data.html_url,
     });
 
-    const copilotLLMResponse = await fetch("https://api.githubcopilot.com/chat/completions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${githubToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ messages, stream: true }),
-    });
-
-    Readable.from(copilotLLMResponse.body).pipe(res);
   } catch (err) {
-    console.error("Error:", err);
-    res.status(500).json({ error: "Something went wrong", details: err.message });
+    console.error("☠️ Error creatin' issue:", err);
+    res.status(500).json({
+      error: "Arrr! Me cannon misfired while creatin’ the issue!",
+      details: err.message,
+    });
   }
 });
 
-const port = Number(process.env.PORT || "3000");
+const port = 3000;
 app.listen(port, () => {
-  console.log(`🚀 BugBot server listening on port ${port}`);
+  console.log(`🏴‍☠️ Server be runnin’ on port ${port}. Ready to raise some issues!`);
 });

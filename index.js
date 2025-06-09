@@ -1,55 +1,54 @@
 import express from "express";
-import bodyParser from "body-parser";
 import { Octokit } from "@octokit/core";
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-// POST endpoint to handle GitHub Copilot chat requests
 app.post("/", async (req, res) => {
   try {
-    const token = req.headers["x-github-token"];
+    // Get GitHub token from header
+    const token = req.get("X-GitHub-Token");
     if (!token) {
       return res.status(401).json({ error: "Missing GitHub token in headers" });
     }
 
     const octokit = new Octokit({ auth: token });
 
-    const payload = req.body;
-    const message = payload?.messages?.at(-1)?.content || "";
-    const repoFullName = payload?.repository?.full_name;
+    // Get authenticated user info (github handle)
+    const user = await octokit.request("GET /user");
+    const githubHandle = user.data.login;
 
-    if (!repoFullName) {
-      return res.status(400).json({ error: "Repository full name missing" });
+    // Get repo full name and optional title from body
+    const { repositoryFullName, title } = req.body;
+    if (!repositoryFullName) {
+      return res.status(400).json({ error: "repositoryFullName is required in request body" });
     }
 
-    const [owner, repo] = repoFullName.split("/");
+    const [owner, repo] = repositoryFullName.split("/");
+    if (!owner || !repo) {
+      return res.status(400).json({ error: "Invalid repositoryFullName format, expected owner/repo" });
+    }
 
-    // Parse title and assignee from the message
-    const titleMatch = message.match(/title\s*:\s*["']?(.*?)["']?(,|\s|$)/i);
-    const assigneeMatch = message.match(/assignee\s*:\s*["']?@?([\w-]+)["']?(,|\s|$)/i);
+    const issueTitle = title && title.trim() !== "" ? title.trim() : "Default Issue Title from Copilot";
 
-    const title = titleMatch ? titleMatch[1].trim() : "Default Issue Title from Copilot";
-    const assignee = assigneeMatch ? assigneeMatch[1].trim() : null;
-
+    // Prepare payload to create issue, assign to the authenticated user
     const issuePayload = {
       owner,
       repo,
-      title,
+      title: issueTitle,
+      assignees: [githubHandle],
     };
 
-    if (assignee) {
-      issuePayload.assignees = [assignee];
-    }
+    // Create the issue
+    const createdIssue = await octokit.request("POST /repos/{owner}/{repo}/issues", issuePayload);
 
-    const created = await octokit.request("POST /repos/{owner}/{repo}/issues", issuePayload);
-
-    return res.status(200).json({
+    // Respond with the issue URL
+    return res.status(201).json({
       message: "Issue created successfully",
-      issue_url: created.data.html_url,
+      issue_url: createdIssue.data.html_url,
     });
   } catch (err) {
-    console.error("❌ Error creating issue:", err?.response?.data || err.message);
+    console.error("Error creating issue:", err?.response?.data || err.message);
     return res.status(500).json({
       error: "Issue creation failed",
       details: err?.response?.data || err.message,
@@ -57,12 +56,11 @@ app.post("/", async (req, res) => {
   }
 });
 
-// Simple GET route to test the extension
+// Simple GET for health check
 app.get("/", (req, res) => {
-  res.send("🧭 Ahoy! GitHub Copilot Issue Creator is live.");
+  res.send("🧭 GitHub Copilot Issue Creator is live.");
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🟢 Server running on port ${PORT}`);

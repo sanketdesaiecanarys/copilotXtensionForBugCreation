@@ -1,70 +1,97 @@
-import express from "express";
 import { Octokit } from "@octokit/core";
+import express from "express";
+import { Readable } from "node:stream";
 
 const app = express();
-app.use(express.json());
 
-// Home route
 app.get("/", (req, res) => {
-  res.send("🏴‍☠️ Welcome to the Copilot Issue Creator!");
+  res.send("Ahoy, matey! Welcome to the Blackbeard Pirate GitHub Copilot Extension!");
 });
 
-// Create GitHub Issue
-app.post("/create-issue", async (req, res) => {
-  console.log("🚀 Received POST /create-issue");
+app.post("/", express.json(), async (req, res) => {
+  const tokenForUser = req.get("X-GitHub-Token");
 
-  const token =
-    req.get("X-GitHub-Token") || req.get("Authorization")?.replace("Bearer ", "");
-  if (!token) {
-    console.error("❌ Missing GitHub token.");
+  if (!tokenForUser) {
+    console.error("❌ GitHub token not provided!");
     return res.status(400).json({ error: "Missing GitHub token in header." });
   }
 
-  const { title, body } = req.body;
-  if (!title) {
-    console.error("❌ Missing issue title.");
-    return res.status(400).json({ error: "Missing 'title' in request body." });
-  }
-
-  const octokit = new Octokit({ auth: token });
+  console.log("✅ Token received (first 6 chars):", tokenForUser.slice(0, 6) + "...");
+  const octokit = new Octokit({ auth: tokenForUser });
 
   try {
-    // Step 1: Get authenticated user's login
-    const userResp = await octokit.request("GET /user");
-    const username = userResp.data.login;
-    console.log(`🧑 Authenticated as: ${username}`);
+    const user = await octokit.request("GET /user");
+    const username = user.data.login;
+    console.log("👤 GitHub Handle:", username);
 
-    // Step 2: Get repo list and select one (first or based on logic)
-    const reposResp = await octokit.request("GET /user/repos", {
-      per_page: 1, // change to get more repos if needed
+    const payload = req.body;
+    console.log("📦 Payload received:", JSON.stringify(payload, null, 2));
+
+    // Fetch user repositories
+    const reposResponse = await octokit.request("GET /user/repos", {
+      per_page: 5, // Limit to 5 repos for brevity
+      sort: "updated",
     });
 
-    if (reposResp.data.length === 0) {
-      console.error("❌ No repositories found for the user.");
-      return res.status(400).json({ error: "No repositories available." });
+    const repoNames = reposResponse.data.map(r => r.name);
+    console.log("📁 Repository Names (first 5):", repoNames);
+
+    const defaultRepo = repoNames[0];
+    if (!defaultRepo) {
+      console.error("❌ No repositories found for this user.");
+      return res.status(400).json({ error: "No repositories available to create an issue." });
     }
 
-    const repo = reposResp.data[0].name;
-    const owner = reposResp.data[0].owner.login;
-    console.log(`📦 Using repo: ${owner}/${repo}`);
+    console.log("📌 Selected Repo:", defaultRepo);
 
-    // Step 3: Create the issue
-    const issueResp = await octokit.request("POST /repos/{owner}/{repo}/issues", {
-      owner,
-      repo,
-      title,
-      body,
+    // 👉 Post an issue to GitHub
+    const issueResponse = await octokit.request(
+      "POST /repos/{owner}/{repo}/issues",
+      {
+        owner: username,
+        repo: defaultRepo,
+        title: "Test issue",
+        body: "Testing via Copilot Extension.",
+        labels: ["bug"],
+      }
+    );
+
+    console.log("✅ Issue created:", issueResponse.data.html_url);
+
+    // 👇 Proceed with Copilot streaming response
+    const messages = payload.messages || [];
+    messages.unshift({
+      role: "system",
+      content: "You are a helpful assistant that replies to user messages as if you were the Blackbeard Pirate.",
+    });
+    messages.unshift({
+      role: "system",
+      content: `Start every response with the user's name, which is @${username}`,
     });
 
-    console.log(`✅ Issue created at: ${issueResp.data.html_url}`);
-    return res.status(201).json({ issueUrl: issueResp.data.html_url });
+    const copilotLLMResponse = await fetch(
+      "https://api.githubcopilot.com/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${tokenForUser}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          messages,
+          stream: true,
+        }),
+      }
+    );
+
+    Readable.from(copilotLLMResponse.body).pipe(res);
   } catch (err) {
-    console.error("🔥 GitHub API Error:", err.message || err);
-    return res.status(500).json({ error: err.message || "Internal Server Error" });
+    console.error("🔥 Error occurred:", err.message || err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-const port = process.env.PORT || 3000;
+const port = Number(process.env.PORT || "3000");
 app.listen(port, () => {
-  console.log(`⚓ Server running on http://localhost:${port}`);
+  console.log(`🚀 Server running on http://localhost:${port}`);
 });
